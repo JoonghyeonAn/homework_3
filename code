@@ -1,0 +1,128 @@
+import cv2
+import os
+from utils.object_tracker import ObjectTracker
+from utils.calibration import PixelToMeterConverter
+from utils.motion_utils import MotionAnalyzer
+
+# 초기 설정
+image_folder = 'frames'
+output_file = 'results/tracking_output.csv'
+tracker = ObjectTracker(iou_threshold=0.4)
+converter = PixelToMeterConverter(pixels_per_meter=15)  # 예시 비율
+motion_analyzer = MotionAnalyzer(converter)
+
+# 프레임 불러오기
+image_files = sorted([f for f in os.listdir(image_folder) if f.endswith('.jpg')])
+prev_positions = {}
+
+with open(output_file, 'w') as f:
+    f.write("frame,id,x_meter,y_meter,speed(m/s),direction(deg)\n")
+    for frame_idx, file_name in enumerate(image_files):
+        frame = cv2.imread(os.path.join(image_folder, file_name))
+        detections = tracker.detect_objects(frame)
+        tracked_objects = tracker.track(detections)
+
+        for obj in tracked_objects:
+            id, bbox = obj['id'], obj['bbox']
+            cx, cy = tracker.get_center(bbox)
+            x_meter, y_meter = converter.to_meters(cx, cy)
+# 속도 계산
+            if id in prev_positions:
+                speed, direction = motion_analyzer.compute(id, (x_meter, y_meter), prev_positions[id])
+            else:
+                speed, direction = 0.0, 0.0
+
+            prev_positions[id] = (x_meter, y_meter)
+            f.write(f"{frame_idx},{id},{x_meter:.2f},{y_meter:.2f},{speed:.2f},{direction:.2f}\n")
+#이미지 정리 스크립트 활용용
+import os
+import shutil
+
+src_folder = 'raw_images'
+dst_folder = 'frame'
+
+os.makedirs(dst_folder, exist_ok=True)
+image_files = sorted([f for f in os.listdir(src_folder) if f.lower().endswith(('.jpg', '.png', '.jpeg'))])
+
+for idx, filename in enumerate(image_files):
+    new_name = f"{idx+1:06d}.jpg"
+    shutil.copy(os.path.join(src_folder, filename), os.path.join(dst_folder, new_name))
+
+print(f"{len(image_files)}개의 이미지가 frame 폴더로 정리되었습니다.")
+
+#utils/object_tracker.py
+
+import random
+import numpy as np
+
+class ObjectTracker:
+    def __init__(self, iou_threshold=0.5):
+        self.objects = {}  # id: bbox
+        self.next_id = 0
+        self.iou_threshold = iou_threshold
+
+    def detect_objects(self, frame):
+        # 예시: 랜덤 박스 생성 (실제는 CNN or Segment 사용)
+        h, w = frame.shape[:2]
+        return [self._random_box(w, h) for _ in range(2)]
+
+    def track(self, detections):
+        results = []
+        for det in detections:
+            matched_id = self._match(det)
+            if matched_id is None:
+                matched_id = self.next_id
+                self.next_id += 1
+            self.objects[matched_id] = det
+            results.append({'id': matched_id, 'bbox': det})
+        return results
+
+    def _match(self, new_box):
+        for id, old_box in self.objects.items():
+            if self.iou(new_box, old_box) > self.iou_threshold:
+                return id
+        return None
+
+    def iou(self, boxA, boxB):
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+        interArea = max(0, xB - xA) * max(0, yB - yA)
+        boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        return interArea / float(boxAArea + boxBArea - interArea)
+
+    def get_center(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return (x1 + x2) // 2, (y1 + y2) // 2
+
+    def _random_box(self, w, h):
+        x1 = random.randint(0, w - 100)
+        y1 = random.randint(0, h - 100)
+        return [x1, y1, x1 + 80, y1 + 80]
+
+#utils/calibration.py
+
+class PixelToMeterConverter:
+    def __init__(self, pixels_per_meter=10):
+        self.ppm = pixels_per_meter
+
+    def to_meters(self, x_pixel, y_pixel):
+        return x_pixel / self.ppm, y_pixel / self.ppm
+ 
+#utils/motion_utils.py
+
+import math
+
+class MotionAnalyzer:
+    def __init__(self, converter):
+        self.converter = converter
+
+    def compute(self, id, current_pos, prev_pos):
+        dx = current_pos[0] - prev_pos[0]
+        dy = current_pos[1] - prev_pos[1]
+        distance = math.sqrt(dx**2 + dy**2)
+        speed = distance / 1  # assuming 1 frame = 1 sec
+        direction = math.degrees(math.atan2(dy, dx))
+        return speed, direction
